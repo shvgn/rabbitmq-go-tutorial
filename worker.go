@@ -1,9 +1,13 @@
-// https://www.rabbitmq.com/tutorials/tutorial-one-go.html
+// https://www.rabbitmq.com/tutorials/tutorial-two-go.html
 
+// Fake a second of work for every dot in the message body. It will pop messages
+// from the queue and perform the task
 package main
 
 import (
+	"bytes"
 	"log"
+	"time"
 
 	"github.com/streadway/amqp"
 )
@@ -31,14 +35,30 @@ func main() {
 	// consumer before the publisher, we want to make sure the queue exists
 	// before we try to consume messages from it.
 	q, err := ch.QueueDeclare(
-		"hello", // name
-		false,   // durable
-		false,   // delete when usused
-		false,   // exclusive
-		false,   // no-wait
-		nil,     // arguments
+		"task_queue", // name
+		true,         // durable
+		false,        // delete when usused
+		false,        // exclusive
+		false,        // no-wait
+		nil,          // arguments
 	)
 	failOnError(err, "Failed to declare a queue")
+
+	// We can set the prefetch count with the value of 1. This tells RabbitMQ
+	// not to give more than one message to a worker at a time. Or, in other
+	// words, don't dispatch a new message to a worker until it has processed
+	// and acknowledged the previous one. Instead, it will dispatch it to the
+	// next worker that is not still busy.
+	//
+	// NOTE: If all the workers are busy, your queue can fill up. You will want
+	// to keep an eye on that, and maybe add more workers, or have some other
+	// strategy.
+	err = ch.Qos(
+		1,     // prefetch count
+		0,     // prefetch size
+		false, // global
+	)
+	failOnError(err, "Failed to set QoS")
 
 	// We're about to tell the server to deliver us the messages from the queue.
 	// Since it will push us messages asynchronously, we will read the messages
@@ -46,7 +66,7 @@ func main() {
 	msgs, err := ch.Consume(
 		q.Name, // queue
 		"",     // consumer
-		true,   // auto-ack
+		false,  // auto-ack
 		false,  // exclusive
 		false,  // no-local
 		false,  // no-wait
@@ -59,6 +79,13 @@ func main() {
 	go func() {
 		for d := range msgs {
 			log.Printf("Received a message: %s", d.Body)
+			dotCount := bytes.Count(d.Body, []byte("."))
+			t := time.Duration(dotCount)
+			// Note that our fake task simulates execution time.
+			time.Sleep(t * time.Second)
+			log.Printf("Done")
+			err := d.Ack(false)
+			failOnError(err, "Failed to acknowledge a delivery")
 		}
 	}()
 
